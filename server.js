@@ -50,6 +50,7 @@ function isOutOfScope(message) {
 }
 
 /* ---------------- MONGODB ---------------- */
+
 const client = new MongoClient(process.env.MONGODB_URI);
 let db;
 
@@ -127,7 +128,7 @@ app.post("/api/train-txt", upload.single("file"), async (req, res) => {
           source: "uploaded-txt",
         },
       },
-      { upsert: true }
+      { upsert: true },
     );
 
     res.json({
@@ -155,7 +156,7 @@ app.get("/api/documents", async (req, res) => {
         id: doc._id.toString(),
         filename: doc.filename,
         uploadedAt: doc.uploadedAt,
-      }))
+      })),
     );
   } catch (err) {
     console.error("DOCUMENT LIST ERROR:", err);
@@ -225,7 +226,7 @@ app.post("/api/chat", async (req, res) => {
       ? `Document context:\n${documents
           .map(
             (doc, index) =>
-              `Document ${index + 1} (${doc.filename}):\n${doc.content}`
+              `Document ${index + 1} (${doc.filename}):\n${doc.content}`,
           )
           .join("\n\n")}`
       : "";
