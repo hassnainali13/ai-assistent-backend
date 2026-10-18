@@ -51,11 +51,16 @@ function isOutOfScope(message) {
 
 /* ---------------- MONGODB ---------------- */
 
-const client = new MongoClient(process.env.MONGODB_URI);
+let client;
 let db;
 
 async function connectDB() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error("MONGODB_URI is required to access the database");
+  }
+
   if (!db) {
+    client = new MongoClient(process.env.MONGODB_URI);
     await client.connect();
     db = client.db("bot_demo");
     console.log("✅ MongoDB Connected");
@@ -66,7 +71,7 @@ async function connectDB() {
 /* ---------------- GEMINI ---------------- */
 /**
  * IMPORTANT:
- * gemini-2.5-flash works
+ * gemini-3.8-flash works
  * gemini-1.5-flash DOES NOT work on your key
  */
 const genAI = new GoogleGenAI({
@@ -263,7 +268,7 @@ Assistant:
     let response;
     try {
       response = await genAI.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         contents: finalPrompt,
         temperature: 0.3,
         maxOutputTokens: 512,
