@@ -27,6 +27,7 @@ import './App.css'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001').replace(/\/$/, '')
 const MAX_FILE_SIZE = 20 * 1024 * 1024
+const MAX_PANEL_IMAGE_SIZE = 10 * 1024 * 1024
 
 async function extractText(file) {
   if (file.name.toLowerCase().endsWith('.pdf')) {
@@ -90,6 +91,15 @@ async function fetchDocuments() {
   const response = await fetch(`${API_BASE_URL}/api/documents`)
   if (!response.ok) {
     throw new Error(await readError(response, 'Could not load your documents.'))
+  }
+  const data = await response.json()
+  return Array.isArray(data) ? data : []
+}
+
+async function fetchPanelImages() {
+  const response = await fetch(`${API_BASE_URL}/api/panel-images`)
+  if (!response.ok) {
+    throw new Error(await readError(response, 'Could not load panel images.'))
   }
   const data = await response.json()
   return Array.isArray(data) ? data : []
@@ -300,11 +310,18 @@ function ChatTester({ connection }) {
 
 function App() {
   const fileInputRef = useRef(null)
+  const panelImageInputRef = useRef(null)
   const [documents, setDocuments] = useState([])
+  const [panelImages, setPanelImages] = useState([])
   const [selectedFile, setSelectedFile] = useState(null)
+  const [selectedPanelImages, setSelectedPanelImages] = useState([])
   const [searchTerm, setSearchTerm] = useState('')
+  const [panelImageUrl, setPanelImageUrl] = useState('')
+  const [panelImageTitle, setPanelImageTitle] = useState('')
+  const [panelImageDescription, setPanelImageDescription] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isUploading, setIsUploading] = useState(false)
+  const [isSavingPanelImage, setIsSavingPanelImage] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
   const [connection, setConnection] = useState('checking')
@@ -326,13 +343,25 @@ function App() {
     }
   }, [])
 
+  const refreshPanelImages = useCallback(async () => {
+    try {
+      setPanelImages(await fetchPanelImages())
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        text: error.message || 'Unable to load panel images.',
+      })
+    }
+  }, [])
+
   useEffect(() => {
     let active = true
 
-    fetchDocuments()
-      .then((data) => {
+    Promise.all([fetchDocuments(), fetchPanelImages()])
+      .then(([documentList, imageList]) => {
         if (!active) return
-        setDocuments(data)
+        setDocuments(documentList)
+        setPanelImages(imageList)
         setConnection('online')
       })
       .catch(() => {
@@ -369,6 +398,28 @@ function App() {
       return
     }
     setSelectedFile(file)
+  }
+
+  function choosePanelImages(files, input) {
+    setNotice(null)
+    const selectedImages = Array.from(files || [])
+    if (!selectedImages.length) {
+      setSelectedPanelImages([])
+      return
+    }
+    if (selectedImages.some((file) => !file.type.startsWith('image/'))) {
+      setSelectedPanelImages([])
+      input.value = ''
+      setNotice({ kind: 'error', text: 'Choose valid image files.' })
+      return
+    }
+    if (selectedImages.some((file) => file.size > MAX_PANEL_IMAGE_SIZE)) {
+      setSelectedPanelImages([])
+      input.value = ''
+      setNotice({ kind: 'error', text: 'Each panel image must be smaller than 10 MB.' })
+      return
+    }
+    setSelectedPanelImages(selectedImages)
   }
 
   async function handleUpload(event) {
@@ -426,6 +477,111 @@ function App() {
       setNotice({ kind: 'error', text: error.message || 'Could not remove this document.' })
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  async function handleSavePanelImage(event) {
+    event.preventDefault()
+    const trimmedUrl = panelImageUrl.trim()
+    if ((!trimmedUrl && !selectedPanelImages.length) || isSavingPanelImage) return
+
+    setIsSavingPanelImage(true)
+    setNotice(null)
+
+    try {
+      const imagesToSave = selectedPanelImages.length ? selectedPanelImages : [null]
+      const results = []
+
+      for (const file of imagesToSave) {
+        try {
+          const title = panelImageTitle.trim() || file?.name.replace(/\.[^.]+$/, '') || 'Panel image'
+          const imagePayload = {
+            title,
+            description: panelImageDescription.trim(),
+            alt: title,
+          }
+
+          if (file) {
+            const fileDataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result)
+              reader.onerror = () => reject(new Error(`Could not read ${file.name}.`))
+              reader.readAsDataURL(file)
+            })
+            imagePayload.imageDataUrl = String(fileDataUrl)
+          } else {
+            imagePayload.imageUrl = trimmedUrl
+          }
+
+          const response = await fetch(`${API_BASE_URL}/api/panel-images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(imagePayload),
+          })
+
+          if (!response.ok) {
+            throw new Error(await readError(response, 'Panel image upload failed.'))
+          }
+
+          results.push({ status: 'fulfilled', value: await response.json() })
+        } catch (reason) {
+          results.push({ status: 'rejected', reason })
+        }
+      }
+
+      const savedImages = results.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      )
+      const failedResults = results.filter((result) => result.status === 'rejected')
+
+      if (savedImages.length) {
+        setPanelImages((current) => [...savedImages, ...current])
+      }
+
+      if (failedResults.length) {
+        const failedImages = results.flatMap((result, index) =>
+          result.status === 'rejected' && imagesToSave[index] ? [imagesToSave[index]] : [],
+        )
+        setSelectedPanelImages(failedImages)
+        if (panelImageInputRef.current) panelImageInputRef.current.value = ''
+        const firstError = failedResults[0].reason?.message || 'Panel image upload failed.'
+        setNotice({
+          kind: 'error',
+          text: `Saved ${savedImages.length} of ${imagesToSave.length} images. ${firstError}`,
+        })
+        return
+      }
+
+      setPanelImageUrl('')
+      setPanelImageTitle('')
+      setPanelImageDescription('')
+      setSelectedPanelImages([])
+      if (panelImageInputRef.current) panelImageInputRef.current.value = ''
+      setNotice({
+        kind: 'success',
+        text: `${savedImages.length} panel image${savedImages.length === 1 ? '' : 's'} added to your portfolio gallery.`,
+      })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Panel image upload failed.' })
+    } finally {
+      setIsSavingPanelImage(false)
+    }
+  }
+
+  async function handleDeletePanelImage(imageId) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/panel-images/${imageId}`, {
+        method: 'DELETE',
+      })
+
+      if (!response.ok) {
+        throw new Error(await readError(response, 'Could not remove this panel image.'))
+      }
+
+      setPanelImages((current) => current.filter((item) => item.id !== imageId))
+      setNotice({ kind: 'success', text: 'Panel image removed.' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Could not remove this panel image.' })
     }
   }
 
@@ -556,6 +712,93 @@ function App() {
             </aside>
           </section>
 
+          <section className="training-grid" aria-label="Add panel images" style={{ marginTop: '28px' }}>
+            <div className="upload-panel">
+              <div className="section-title-row">
+                <div><span className="section-kicker">ADD IMAGES</span><h2>Upload panel photos</h2></div>
+                <span className="format-chip">URL <i /> IMAGE</span>
+              </div>
+
+              <form onSubmit={handleSavePanelImage} style={{ display: 'grid', gap: '18px' }}>
+                <label style={{ display: 'grid', gap: '10px' }}>
+                  <span className="section-kicker" style={{ fontSize: '11px', letterSpacing: '0.12em' }}>Title</span>
+                  <input
+                    type="text"
+                    value={panelImageTitle}
+                    onChange={(event) => setPanelImageTitle(event.target.value)}
+                    placeholder="Main electrical panel"
+                    className="search-field"
+                    style={{ width: '100%', border: '1px solid rgba(148, 163, 184, 0.25)', background: '#0f172a', color: '#e2e8f0', borderRadius: '12px', padding: '12px 14px' }}
+                  />
+                </label>
+
+                <label style={{ display: 'grid', gap: '10px' }}>
+                  <span className="section-kicker" style={{ fontSize: '11px', letterSpacing: '0.12em' }}>Cloudinary or direct image URL</span>
+                  <input
+                    type="url"
+                    value={panelImageUrl}
+                    onChange={(event) => setPanelImageUrl(event.target.value)}
+                    placeholder="https://res.cloudinary.com/.../panel-image.jpg"
+                    className="search-field"
+                    style={{ width: '100%', border: '1px solid rgba(148, 163, 184, 0.25)', background: '#0f172a', color: '#e2e8f0', borderRadius: '12px', padding: '12px 14px' }}
+                  />
+                </label>
+
+                <label style={{ display: 'grid', gap: '10px' }}>
+                  <span className="section-kicker" style={{ fontSize: '11px', letterSpacing: '0.12em' }}>Optional description</span>
+                  <textarea
+                    value={panelImageDescription}
+                    onChange={(event) => setPanelImageDescription(event.target.value)}
+                    rows={3}
+                    placeholder="Installed in Karachi industrial project"
+                    className="search-field"
+                    style={{ width: '100%', border: '1px solid rgba(148, 163, 184, 0.25)', background: '#0f172a', color: '#e2e8f0', borderRadius: '12px', padding: '12px 14px', resize: 'vertical' }}
+                  />
+                </label>
+
+                <label style={{ display: 'grid', gap: '10px' }}>
+                  <span className="section-kicker" style={{ fontSize: '11px', letterSpacing: '0.12em' }}>Or upload local images</span>
+                  <input
+                    ref={panelImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(event) => choosePanelImages(event.target.files, event.target)}
+                    style={{ border: '1px dashed rgba(148, 163, 184, 0.4)', background: 'rgba(15, 23, 42, 0.6)', borderRadius: '12px', padding: '12px 14px', color: '#cbd5e1' }}
+                  />
+                  {selectedPanelImages.length > 0 && (
+                    <span style={{ color: '#e2e8f0', fontSize: '13px' }}>
+                      {selectedPanelImages.length} image{selectedPanelImages.length === 1 ? '' : 's'} selected
+                      {selectedPanelImages.map((file) => (
+                        <span key={`${file.name}-${file.lastModified}`} style={{ display: 'block', color: '#94a3b8' }}>
+                          {file.name} · {formatFileSize(file.size)}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </label>
+
+                <div className="upload-actions" style={{ marginTop: '0' }}>
+                  <p><CircleHelp size={15} /> Add a direct Cloudinary link or select multiple local images for the portfolio gallery.</p>
+                  <button type="submit" className="primary-button" disabled={(!panelImageUrl.trim() && !selectedPanelImages.length) || isSavingPanelImage || connection !== 'online'}>
+                    {isSavingPanelImage ? <LoaderCircle className="spin" size={17} /> : <Upload size={16} />}
+                    {isSavingPanelImage ? 'Saving images' : 'Add panel images'}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <aside className="training-aside">
+              <div className="aside-icon"><Sparkles size={18} /></div>
+              <span className="section-kicker">PORTFOLIO GALLERY</span>
+              <h2>Show all family work images</h2>
+              <p>These photos are stored on the same server and can be displayed in the family-work section of the main portfolio site.</p>
+              <div className="aside-rule" />
+              <div className="aside-foot"><span className="aside-number">01</span><span>Use a Cloudinary link or upload multiple local images.</span></div>
+              <div className="aside-foot"><span className="aside-number">02</span><span>Each new photo becomes a portfolio gallery item.</span></div>
+            </aside>
+          </section>
+
           <section className="documents-section" aria-labelledby="documents-heading">
             <div className="documents-header">
               <div className="documents-title"><div className="section-title-row"><div><span className="section-kicker">YOUR LIBRARY</span><h2 id="documents-heading">Source documents <span className="count-pill">{documents.length}</span></h2></div></div><p>Reference files currently available to your assistant.</p></div>
@@ -589,6 +832,38 @@ function App() {
             </div>
 
             <footer className="library-footer"><span><Check size={14} /> {documents.length} {documents.length === 1 ? 'document' : 'documents'} in your library</span><span>API <code>{API_BASE_URL}</code></span></footer>
+          </section>
+
+          <section className="documents-section" aria-labelledby="panel-images-heading" style={{ marginTop: '28px' }}>
+            <div className="documents-header">
+              <div className="documents-title">
+                <div className="section-title-row">
+                  <div>
+                    <span className="section-kicker">GALLERY</span>
+                    <h2 id="panel-images-heading">Portfolio image library <span className="count-pill">{panelImages.length}</span></h2>
+                  </div>
+                </div>
+                <p>Photos available for display in the family-work section.</p>
+              </div>
+              <button type="button" className="icon-button refresh-button" onClick={() => { void refreshPanelImages() }} aria-label="Refresh panel images" title="Refresh panel images"><RefreshCw size={16} /></button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '18px', marginTop: '18px' }}>
+              {panelImages.length ? panelImages.map((image) => (
+                <div key={image.id} style={{ background: '#0f172a', border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: '16px', overflow: 'hidden' }}>
+                  <img src={image.imageUrl} alt={image.alt || image.title} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} />
+                  <div style={{ padding: '12px 14px', display: 'grid', gap: '6px' }}>
+                    <strong style={{ color: '#f8fafc' }}>{image.title}</strong>
+                    {image.description && <span style={{ color: '#cbd5e1', fontSize: '12px' }}>{image.description}</span>}
+                    <button type="button" className="icon-button delete-button" onClick={() => void handleDeletePanelImage(image.id)} aria-label={`Remove ${image.title}`} title="Remove image" style={{ justifySelf: 'flex-end' }}><Trash2 size={15} /></button>
+                  </div>
+                </div>
+              )) : (
+                <div className="empty-cell" style={{ width: '100%' }}>
+                  <div className="empty-state"><span className="empty-icon"><Database size={20} /></span><strong>No panel images yet</strong><span>Add a Cloudinary link or upload one below.</span></div>
+                </div>
+              )}
+            </div>
           </section>
         </div>
       </main>

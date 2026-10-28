@@ -10,7 +10,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 /* ---------------- BASIC MIDDLEWARE ---------------- */
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
 
 /* ---------------- SERVER PORT ---------------- */
 const PORT = process.env.PORT || 5001;
@@ -178,6 +178,84 @@ app.delete("/api/documents/:id", async (req, res) => {
   } catch (err) {
     console.error("DOCUMENT DELETE ERROR:", err);
     res.status(500).json({ error: "Unable to delete document" });
+  }
+});
+
+/* ---------------- PANEL IMAGES ---------------- */
+app.get("/api/panel-images", async (req, res) => {
+  try {
+    const database = await connectDB();
+    const images = await database
+      .collection("panel_images")
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json(
+      images.map((image) => ({
+        id: image._id.toString(),
+        title: image.title || "Panel image",
+        alt: image.alt || image.title || "Electrical panel image",
+        description: image.description || "",
+        imageUrl: image.imageUrl || image.imageDataUrl || "",
+        createdAt: image.createdAt,
+      })),
+    );
+  } catch (err) {
+    console.error("PANEL IMAGE LIST ERROR:", err);
+    res.status(500).json({ error: "Unable to load panel images" });
+  }
+});
+
+app.post("/api/panel-images", async (req, res) => {
+  try {
+    const { title, description, imageUrl, imageDataUrl, alt } = req.body || {};
+    const normalizedUrl = (imageUrl || imageDataUrl || "").trim();
+
+    if (!normalizedUrl) {
+      return res.status(400).json({ error: "Image URL or data URL is required." });
+    }
+
+    const database = await connectDB();
+    const payload = {
+      title: (title || "Panel image").trim(),
+      description: (description || "").trim(),
+      alt: (alt || title || "Panel image").trim(),
+      imageUrl: imageUrl?.trim() || "",
+      imageDataUrl: imageDataUrl?.trim() || "",
+      createdAt: new Date(),
+    };
+
+    const imageRecord = {
+      ...payload,
+      imageUrl: payload.imageUrl || payload.imageDataUrl,
+    };
+
+    const result = await database.collection("panel_images").insertOne(imageRecord);
+
+    res.status(201).json({
+      id: result.insertedId.toString(),
+      title: imageRecord.title,
+      description: imageRecord.description,
+      alt: imageRecord.alt,
+      imageUrl: imageRecord.imageUrl,
+      createdAt: imageRecord.createdAt,
+    });
+  } catch (err) {
+    console.error("PANEL IMAGE CREATE ERROR:", err);
+    res.status(500).json({ error: "Unable to save panel image." });
+  }
+});
+
+app.delete("/api/panel-images/:id", async (req, res) => {
+  try {
+    const database = await connectDB();
+    const { id } = req.params;
+    await database.collection("panel_images").deleteOne({ _id: new ObjectId(id) });
+    res.json({ message: "Panel image deleted successfully." });
+  } catch (err) {
+    console.error("PANEL IMAGE DELETE ERROR:", err);
+    res.status(500).json({ error: "Unable to delete panel image" });
   }
 });
 
