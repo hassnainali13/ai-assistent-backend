@@ -6,11 +6,14 @@ const { MongoClient, ObjectId } = require("mongodb");
 const { GoogleGenAI } = require("@google/genai");
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+});
 
 /* ---------------- BASIC MIDDLEWARE ---------------- */
 app.use(cors());
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "4mb" }));
 
 /* ---------------- SERVER PORT ---------------- */
 const PORT = process.env.PORT || 5001;
@@ -51,21 +54,38 @@ function isOutOfScope(message) {
 
 /* ---------------- MONGODB ---------------- */
 
-let client;
-let db;
+let dbPromise;
 
 async function connectDB() {
-  if (!process.env.MONGODB_URI) {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
     throw new Error("MONGODB_URI is required to access the database");
   }
 
-  if (!db) {
-    client = new MongoClient(process.env.MONGODB_URI);
-    await client.connect();
-    db = client.db("bot_demo");
-    console.log("✅ MongoDB Connected");
+  if (!dbPromise) {
+    const client = new MongoClient(uri, {
+      maxPoolSize: 5,
+      serverSelectionTimeoutMS: 5000,
+    });
+
+    dbPromise = client
+      .connect()
+      .then(() => {
+        console.log("✅ MongoDB Connected");
+        return client.db("bot_demo");
+      })
+      .catch(async (err) => {
+        dbPromise = undefined;
+        try {
+          await client.close();
+        } catch (closeError) {
+          console.error("MONGODB CLEANUP ERROR:", closeError);
+        }
+        throw err;
+      });
   }
-  return db;
+
+  return dbPromise;
 }
 
 /* ---------------- GEMINI ---------------- */
@@ -344,15 +364,36 @@ Assistant:
     const timeout = setTimeout(() => controller.abort(), 8000);
 
     let response;
+    let aiError;
     try {
-      response = await genAI.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: finalPrompt,
-        temperature: 0.3,
-        maxOutputTokens: 512,
-        signal: controller.signal,
-      });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await genAI.models.generateContent({
+            model: "gemini-3.8-flash",
+            contents: finalPrompt,
+            temperature: 0.3,
+            maxOutputTokens: 512,
+            signal: controller.signal,
+          });
+          break;
+        } catch (err) {
+          if (err?.status !== 503 || attempt === 1) {
+            aiError = err;
+            break;
+          }
+
+          console.warn("Gemini returned 503; retrying once.");
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+      }
+
+      if (aiError) throw aiError;
     } catch (err) {
+      console.error("GEMINI API ERROR:", {
+        status: err?.status || "unknown",
+        name: err?.name || "Error",
+      });
+
       if (err.name === "AbortError") {
         return res.status(504).json({
           reply: "Response took too long. Please try again.",
@@ -403,6 +444,22 @@ app.get("/api/chat", (req, res) => {
   res.status(405).json({
     error: "Use POST method for /api/chat",
   });
+});
+
+app.use((err, req, res, next) => {
+  if (
+    err instanceof multer.MulterError &&
+    err.code === "LIMIT_FILE_SIZE"
+  ) {
+    return res.status(413).json({ error: "File must be 4 MB or smaller." });
+  }
+
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Request must be 4 MB or smaller." });
+  }
+
+  console.error("UNHANDLED REQUEST ERROR:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
 /* ---------------- START SERVER (LOCAL) ---------------- */

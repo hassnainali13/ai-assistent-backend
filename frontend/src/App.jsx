@@ -27,7 +27,8 @@ import './App.css'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001').replace(/\/$/, '')
 const MAX_FILE_SIZE = 20 * 1024 * 1024
-const MAX_PANEL_IMAGE_SIZE = 10 * 1024 * 1024
+const MAX_TRAINING_TEXT_SIZE = 3 * 1024 * 1024
+const MAX_PANEL_IMAGE_SIZE = 2.5 * 1024 * 1024
 
 async function extractText(file) {
   if (file.name.toLowerCase().endsWith('.pdf')) {
@@ -416,7 +417,7 @@ function App() {
     if (selectedImages.some((file) => file.size > MAX_PANEL_IMAGE_SIZE)) {
       setSelectedPanelImages([])
       input.value = ''
-      setNotice({ kind: 'error', text: 'Each panel image must be smaller than 10 MB.' })
+      setNotice({ kind: 'error', text: 'Each panel image must be 2.5 MB or smaller.' })
       return
     }
     setSelectedPanelImages(selectedImages)
@@ -433,6 +434,9 @@ function App() {
       const text = await extractText(selectedFile)
       if (!text) {
         throw new Error('No text could be read. Scanned PDFs need OCR before upload.')
+      }
+      if (new Blob([text]).size > MAX_TRAINING_TEXT_SIZE) {
+        throw new Error('Extracted document text must be 3 MB or smaller for upload.')
       }
 
       const formData = new FormData()
@@ -685,7 +689,7 @@ function App() {
                   ) : (
                     <>
                       <span className="upload-symbol"><FileUp size={23} strokeWidth={1.7} /></span>
-                      <span className="dropzone-copy"><strong>Drop your file here, or <em>browse</em></strong><span>PDF or plain text · Up to 20 MB</span></span>
+                      <span className="dropzone-copy"><strong>Drop your file here, or <em>browse</em></strong><span>PDF or plain text · Up to 20 MB (3 MB extracted text limit)</span></span>
                       <span className="dropzone-shortcut">SELECT FILE <ArrowDownToLine size={14} /></span>
                     </>
                   )}
